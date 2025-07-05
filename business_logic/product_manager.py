@@ -1,16 +1,16 @@
 # src/business_logic/product_manager.py
-from typing import Optional, List, Any, Dict, Tuple,TYPE_CHECKING
+from typing import List, Optional, Dict, Any, TYPE_CHECKING
 from decimal import Decimal,InvalidOperation
 from datetime import datetime
 
 from src.business_logic.entities.product_entity import ProductEntity
+from src.data_access.products_repository import ProductsRepository # مطمئن شوید نام ریپازیتوری شما همین است
 from src.constants import ProductType, InventoryMovementType, ReferenceType 
-# اگر InventoryManager و InventoryMovementEntity دارید، آنها را نیز import کنید
-# from src.business_logic.inventory_manager import InventoryManager 
 from .entities.inventory_movement_entity import InventoryMovementEntity
 if TYPE_CHECKING:
     from ..data_access.products_repository import ProductsRepository
     from ..data_access.inventory_movements_repository import InventoryMovementsRepository
+
 
 import logging
 
@@ -18,12 +18,13 @@ logger = logging.getLogger(__name__)
 
 class ProductManager:
     def __init__(self, product_repository: 'ProductsRepository', inventory_movements_repository: 'InventoryMovementsRepository'):
-
+        self.products_repo = product_repository
+        self.inventory_movements_repo = inventory_movements_repository
         if product_repository is None:
             raise ValueError("product_repository cannot be None")
         self.product_repo = product_repository
         # self.inventory_manager = inventory_manager 
-        self.inventory_movements_repo = inventory_movements_repository
+        # self.inventory_movement_repo = ... # اگر مستقیماً با ریپازیتوری حرکات کار می‌کنید
 
     def get_product_by_id(self, product_id: int) -> Optional[ProductEntity]:
         """یک محصول را با شناسه آن واکشی می‌کند."""
@@ -192,48 +193,34 @@ class ProductManager:
             logger.error(f"Failed to delete product ID {product_id} from repository.")
             return False
 
-    def adjust_stock(self, 
-                     product_id: int, 
-                     quantity_change: Decimal, 
-                     movement_type: InventoryMovementType, 
-                     movement_date: datetime, # باید datetime باشد برای ثبت دقیق‌تر
-                     reference_id: Optional[int] = None, 
-                     reference_type: Optional[ReferenceType] = None,
-                     description: Optional[str] = None,
-                     unit_cost_for_movement: Optional[Decimal] = None # برای ثبت ارزش حرکت انبار
-                     ) -> bool:
-        """موجودی یک کالا را تعدیل کرده و حرکت انبار را ثبت می‌کند."""
-        logger.debug(f"Adjusting stock for product ID {product_id} by {quantity_change}, type: {movement_type.value}")
-        product = self.get_product_by_id(product_id)
+    def adjust_stock(self, product_id: int, quantity_change: Decimal, movement_type: InventoryMovementType, 
+                     movement_date: Optional[datetime] = None, reference_id: Optional[int] = None, 
+                     reference_type: Optional[ReferenceType] = None, description: Optional[str] = None):
+        """
+        Adjusts the stock for a given product and records the movement.
+        This version includes enhanced logging for debugging.
+        """
+        logger.debug(f"ADJUST_STOCK CALLED for Product ID {product_id} by {quantity_change}, type: {movement_type.value}")
         
-        if not product: # <<< بررسی مهم برای رفع خطای Pylance
-            logger.error(f"Cannot adjust stock: Product with ID {product_id} not found.")
-            return False
-        
+        product = self.product_repo.get_by_id(product_id)
+        if not product:
+            logger.error(f"Product with ID {product_id} not found. Cannot adjust stock.")
+            return
+
+        # فقط برای کالاهایی که خدماتی نیستند، حرکت انبار ثبت کن
         if product.product_type == ProductType.SERVICE:
-            logger.warning(f"Stock adjustment not applicable for service product ID {product_id} ('{product.name}').")
-            # برای خدمات، معمولاً تعدیل موجودی معنی ندارد.
-            return True # یا False بسته به اینکه آیا این یک خطای عملیاتی محسوب می‌شود یا خیر
+            logger.info(f"Product '{product.name}' is a service. Stock not adjusted.")
+            return
 
-        # اطمینان از Decimal بودن مقادیر
-        current_stock = product.stock_quantity if product.stock_quantity is not None else Decimal("0.0")
-        change = Decimal(str(quantity_change)) # اطمینان از Decimal بودن ورودی
-
-        new_stock = current_stock + change
-        
-        # جلوگیری از منفی شدن موجودی (بسته به سیاست شرکت)
-        # if new_stock < Decimal("0.0"):
-        #     logger.error(f"Stock for product {product.name} (ID: {product.id}) cannot become negative ({new_stock}). Adjustment by {change} failed.")
-        #     return False
-
+        old_stock = product.stock_quantity
+        new_stock = old_stock + quantity_change
         product.stock_quantity = new_stock
-        if not self.product_repo.update(product):
-            logger.error(f"Failed to update stock quantity for product ID {product_id} in products table.")
-            # TODO: Rollback? یا حداقل یک هشدار جدی
-            return False
         
-        logger.info(f"Stock for product '{product.name}' (ID: {product.id}) adjusted by {change}. Old: {current_stock}, New: {new_stock}. Movement Type: {movement_type.value}.")
-        self.product_repo.update(product)
+        # ۱. ابتدا موجودی کالا در جدول محصولات را به‌روز می‌کنیم
+        update_success = self.product_repo.update(product)
+        if not update_success:
+            logger.error(f"Failed to update stock quantity for product ID {product_id} in products table.")
+            return
         
         # ۲. سپس یک رکورد برای حرکت انبار ایجاد می‌کنیم
         movement = InventoryMovementEntity(
@@ -254,10 +241,10 @@ class ProductManager:
             logger.error(f"FAILED TO SAVE INVENTORY MOVEMENT for Product ID {product_id}")
         # --- پایان لاگ کلیدی ---
 
-        logger.info(f"Stock for product '{product.name}' (ID: {product.id}) adjusted by {quantity_change}. Old: {current_stock}, New: {new_stock}.")
-        return product
+        logger.info(f"Stock for product '{product.name}' (ID: {product.id}) adjusted by {quantity_change}. Old: {old_stock}, New: {new_stock}.")
 
-    def get_product_display_details(self, product_id: Optional[int]) -> Tuple[str, str, str]:
+
+    def get_product_display_details(self, product_id: Optional[int]) -> tuple[str, str, str]:
         """ نام، کد و واحد اندازه‌گیری محصول را برای نمایش برمی‌گرداند. """
         if product_id is None:
             return "نامشخص", "-", ""
