@@ -121,7 +121,7 @@ class MainWindow(QMainWindow):
            financial_transactions_repository=self.financial_transactions_repository,
             person_manager=self.person_manager
         )
-        self.product_manager = ProductManager(product_repository=self.products_repo,inventory_movements_repository=self.inventory_movements_repo)
+        self.product_manager = ProductManager(self.products_repo, self.inventory_movements_repo)
         self.ft_manager = FinancialTransactionManager(self.financial_transactions_repository, self.account_manager)
         
         self.invoice_manager = InvoiceManager(
@@ -195,9 +195,12 @@ class MainWindow(QMainWindow):
         self.reports_manager = ReportsManager(
             account_manager=self.account_manager,
             ft_manager=self.ft_manager,
-            product_manager=self.product_manager, # <<< اضافه شد
-            inventory_movement_repository=self.inventory_movements_repo # <<< اضافه شد
+            product_manager=self.product_manager,
+            person_manager=self.person_manager, # <<< اضافه شد
+            inventory_movement_repository=self.inventory_movements_repo
         )
+        
+        
         self.fiscal_year_manager = FiscalYearManager(self.fiscal_years_repo)
 
         logger.info("Setting up UI...")
@@ -274,12 +277,11 @@ class MainWindow(QMainWindow):
         )
         self.tabs.addTab(self.manual_production_tab, "ثبت تولید دستی")
         self.reports_tab = ReportsUI(
-            reports_manager=self.reports_manager,
+            reports_manager=self.reports_manager, 
             account_manager=self.account_manager,
             product_manager=self.product_manager # <<< اضافه شد
         )
-        self.tabs.addTab(self.reports_tab, "گزارشات")
-        
+        self.tabs.addTab(self.reports_tab, "گزارشات")              
         self.setCentralWidget(self.tabs)
 
 def main():
