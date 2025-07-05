@@ -1,17 +1,18 @@
 from typing import List, Dict, Any, Optional, TYPE_CHECKING
-from datetime import date
+from datetime import date,datetime
 from decimal import Decimal
 from datetime import date, timedelta # <<< FIX: وارد کردن timedelta
 
 from .entities.account_entity import AccountEntity
-from ..constants import FinancialTransactionType,AccountType
-from ..data_access.inventory_movements_repository import InventoryMovementsRepository
-from .product_manager import ProductManager
+from ..constants import FinancialTransactionType,AccountType,PersonType
+from .person_manager import PersonManager
 
 if TYPE_CHECKING:
     from .account_manager import AccountManager
     from .financial_transaction_manager import FinancialTransactionManager
-   
+    from .product_manager import ProductManager
+    from ..data_access.inventory_movements_repository import InventoryMovementsRepository
+
 import logging
 logger = logging.getLogger(__name__)
 
@@ -19,15 +20,19 @@ class ReportsManager:
     """
     Manages the generation of accounting and financial reports.
     """
+   
     def __init__(self,
                  account_manager: 'AccountManager',
                  ft_manager: 'FinancialTransactionManager',
                  product_manager: 'ProductManager',
+                 person_manager: 'PersonManager', # <<< اضافه شد
+
                  inventory_movement_repository: 'InventoryMovementsRepository'):
         self.account_manager = account_manager
         self.ft_manager = ft_manager
         self.product_manager = product_manager
         self.inventory_movement_repo = inventory_movement_repository
+        self.person_manager = person_manager # <<< اضافه شد
 
     def get_trial_balance(self, end_date: date) -> List[Dict[str, Any]]:
         """
@@ -227,72 +232,127 @@ class ReportsManager:
         
         logger.info(f"General Ledger report for Account ID {account_id} generated with {len(report_data)} entries.")
         return report_data
+
     def get_stock_ledger(self, product_id: int, start_date: date, end_date: date) -> List[Dict[str, Any]]:
         """
         کاردکس کالا را برای یک محصول و بازه زمانی مشخص تولید می‌کند.
-        این نسخه شامل لاگ‌های دقیق برای دیباگ است.
         """
         logger.info(f"Generating Stock Ledger for Product ID {product_id} from {start_date} to {end_date}...")
-        
         product = self.product_manager.get_product_by_id(product_id)
-        if not product:
-            logger.error(f"Product with ID {product_id} not found for Stock Ledger.")
-            return []
-
-        # ۱. واکشی تمام حرکات انبار برای کالای مورد نظر
+        opening_stock = product.stock_quantity if product else Decimal("0.0")
         all_movements = self.inventory_movement_repo.find_by_criteria(
-            {"product_id": product_id}, 
-            order_by="movement_date ASC, id ASC"
-        )
-        
-        logger.debug(f"Found {len(all_movements)} total movements for Product ID {product_id}.")
+        {"product_id": product_id},
+        order_by="movement_date ASC, id ASC"
+    )
+        opening_movements = [
+        move for move in all_movements 
+        if isinstance(move.movement_date, (date, datetime)) 
+        and move.movement_date.date() < start_date
+    ]
+        opening_stock += sum(
+        Decimal(str(move.quantity_change)) for move in opening_movements
+    )
+        report_data: List[Dict[str, Any]] = [{
+            "movement_date": start_date, "description": "موجودی از قبل",
+            "qty_in": Decimal("0.0"), "qty_out": Decimal("0.0"), "balance": opening_stock
+        }]
 
-        # ۲. محاسبه موجودی اولیه با پیمایش حرکات قبل از تاریخ شروع
-        opening_stock = Decimal("0.0")
-        for move in all_movements:
-            move_date = move.movement_date.date()
-            logger.debug(f"Processing movement ID {move.id} on {move_date} for opening balance. Comparing with start_date {start_date}.")
-            if move_date < start_date:
-                opening_stock += move.quantity_change
-                logger.debug(f"  -> Included in opening balance. New opening balance: {opening_stock}")
-
-        report_data: List[Dict[str, Any]] = []
-        
-        # افزودن ردیف مانده از قبل
-        report_data.append({
-            "movement_date": start_date,
-            "description": "موجودی از قبل",
-            "qty_in": Decimal("0.0"),
-            "qty_out": Decimal("0.0"),
-            "balance": opening_stock
-        })
-
-        # ۳. پردازش حرکات در بازه زمانی انتخاب شده
         running_balance = opening_stock
         for move in all_movements:
-            move_date = move.movement_date.date()
-            logger.debug(f"Processing movement ID {move.id} on {move_date} for report range. Comparing with start_date {start_date} and end_date {end_date}.")
-            if start_date <= move_date <= end_date:
-                logger.debug(f"  -> Movement ID {move.id} is WITHIN date range. Appending to report.")
-                qty_in = Decimal("0.0")
-                qty_out = Decimal("0.0")
-                
-                if move.quantity_change > 0:
-                    qty_in = move.quantity_change
-                else:
-                    qty_out = -move.quantity_change
-                
+            if start_date <= move.movement_date.date() <= end_date:
                 running_balance += move.quantity_change
-                
                 report_data.append({
-                    "movement_date": move_date,
+                    "movement_date": move.movement_date.date(),
                     "description": move.description,
-                    "qty_in": qty_in,
-                    "qty_out": qty_out,
-                    "balance": running_balance
+                    "qty_in": move.quantity_change if move.quantity_change > 0 else Decimal("0.0"),
+                    "qty_out": -move.quantity_change if move.quantity_change < 0 else Decimal("0.0"),
+                    "balance": running_balance,
                 })
-            else:
-                logger.debug(f"  -> Movement ID {move.id} is OUTSIDE date range.")
             
-        logger.info(f"Stock Ledger report for Product ID {product_id} generated with {len(report_data)} entries.")
+        return report_data
+
+
+    def get_persons_balance_report(self, person_type_filter: PersonType) -> List[Dict[str, Any]]:
+        """
+        گزارش مانده حساب اشخاص را بر اساس نوع (مشتری/تامین‌کننده) تولید می‌کند.
+        """
+        logger.info(f"Generating Persons Balance Report for type: {person_type_filter.value}")
+        
+        persons = self.person_manager.get_persons_by_type(person_type_filter)
+        if not persons:
+            return []
+            
+        report_data = []
+        for person in persons:
+            if not person.id:
+                continue
+                
+            subsidiary_account_id = self.account_manager.get_person_subsidiary_account_id(person.id)
+            if not subsidiary_account_id:
+                logger.warning(f"No subsidiary account found for Person ID {person.id} ({person.name}). Skipping.")
+                continue
+                
+            account = self.account_manager.get_account_by_id(subsidiary_account_id)
+            if not account:
+                logger.warning(f"Subsidiary account with ID {subsidiary_account_id} not found for Person ID {person.id}. Skipping.")
+                continue
+                
+            balance = account.balance
+            
+            # فقط اشخاصی که مانده غیر صفر دارند نمایش داده می‌شوند
+            if balance.copy_abs() > Decimal("0.001"):
+                report_data.append({
+                    "person_id": person.id,
+                    "person_name": person.name,
+                    "balance": balance
+                })
+                
+        logger.info(f"Generated balance report for {len(report_data)} persons.")
+        return report_data
+
+    def get_income_statement_data(self, start_date: date, end_date: date) -> Dict[str, Any]:
+        """
+        داده‌های لازم برای صورت سود و زیان را در یک بازه زمانی مشخص تولید می‌کند.
+        """
+        logger.info(f"Generating Income Statement from {start_date} to {end_date}...")
+        
+        all_accounts = self.account_manager.get_all_accounts()
+        transactions_in_range = self.ft_manager.get_transactions_by_date_range(start_date, end_date)
+        
+        report_data: Dict[str, Any] = {
+            "revenues": [],
+            "total_revenue": Decimal("0.0"),
+            "expenses": [],
+            "total_expense": Decimal("0.0"),
+            "net_income": Decimal("0.0"),
+            "start_date": start_date,
+            "end_date": end_date
+        }
+        
+        # محاسبه مجموع درآمدها
+        revenue_accounts = [acc for acc in all_accounts if acc.type == AccountType.REVENUE]
+        for account in revenue_accounts:
+            account_turnover = sum(
+                (t.amount if t.transaction_type == FinancialTransactionType.INCOME else -t.amount)
+                for t in transactions_in_range if t.account_id == account.id
+            )
+            if account_turnover.copy_abs() > Decimal("0.001"):
+                report_data["revenues"].append({"name": account.name, "amount": account_turnover})
+                report_data["total_revenue"] += account_turnover
+                
+        # محاسبه مجموع هزینه‌ها
+        expense_accounts = [acc for acc in all_accounts if acc.type == AccountType.EXPENSE]
+        for account in expense_accounts:
+            account_turnover = sum(
+                (t.amount if t.transaction_type == FinancialTransactionType.INCOME else -t.amount)
+                for t in transactions_in_range if t.account_id == account.id
+            )
+            if account_turnover.copy_abs() > Decimal("0.001"):
+                report_data["expenses"].append({"name": account.name, "amount": account_turnover})
+                report_data["total_expense"] += account_turnover
+                
+        # محاسبه سود (زیان) خالص
+        report_data["net_income"] = report_data["total_revenue"] - report_data["total_expense"]
+        
+        logger.info(f"Income Statement generated. Net Income: {report_data['net_income']}")
         return report_data
