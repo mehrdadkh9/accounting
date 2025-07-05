@@ -1,7 +1,7 @@
 
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QTableView, QPushButton, QHBoxLayout,
-    QMessageBox, QDialog, QFormLayout, QGroupBox, QHeaderView,QTabWidget,QComboBox
+    QMessageBox, QDialog, QFormLayout, QGroupBox, QHeaderView,QTabWidget,QComboBox,QTextBrowser
 )
 from PyQt5.QtCore import Qt, QAbstractTableModel, QVariant, QModelIndex
 from typing import List, Optional, Any, Dict
@@ -11,10 +11,10 @@ from PyQt5.QtGui import QFont,QColor # <<< QColor وارد شد
 
 from src.business_logic.reports_manager import ReportsManager
 from src.business_logic.account_manager import AccountManager
-from src.business_logic.product_manager import ProductManager # <<< Import جدید
-
+from src.business_logic.product_manager import ProductManager
 from .custom_widgets import ShamsiDateEdit
 from src.utils import date_converter
+from src.constants import PersonType # <<< Import جدید
 
 import logging
 logger = logging.getLogger(__name__)
@@ -183,7 +183,39 @@ class GeneralJournalTableModel(QAbstractTableModel):
         self.beginResetModel()
         self._data = new_data
         self.endResetModel()
+class PersonsBalanceTableModel(QAbstractTableModel):
+    def __init__(self, data: Optional[List[Dict[str, Any]]] = None, parent=None):
+        super().__init__(parent)
+        self._data: List[Dict[str, Any]] = data if data is not None else []
+        self._headers = ["نام شخص", "بدهکار", "بستانکار"]
 
+    def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
+        return len(self._data)
+
+    def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:
+        return len(self._headers)
+
+    def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole) -> Any:
+        if not index.isValid(): return QVariant()
+        item = self._data[index.row()]
+        col = index.column()
+
+        if role == Qt.ItemDataRole.DisplayRole:
+            balance = item.get('balance', Decimal('0.0'))
+            if col == 0: return item.get("person_name", "")
+            elif col == 1: return f"{balance:,.0f}" if balance > 0 else ""
+            elif col == 2: return f"{-balance:,.0f}" if balance < 0 else ""
+        return QVariant()
+
+    def headerData(self, section: int, orientation: Qt.Orientation, role: int = Qt.ItemDataRole.DisplayRole) -> Any:
+        if orientation == Qt.Orientation.Horizontal and role == Qt.ItemDataRole.DisplayRole:
+            if 0 <= section < len(self._headers): return self._headers[section]
+        return QVariant()
+
+    def update_data(self, new_data: List[Dict[str, Any]]):
+        self.beginResetModel()
+        self._data = new_data
+        self.endResetModel()
 # ============================================================
 #  ویجت دفتر روزنامه
 # ============================================================
@@ -267,6 +299,57 @@ class GeneralLedgerTableModel(QAbstractTableModel):
         self._data = new_data
         self.endResetModel()
 
+class StockLedgerTableModel(QAbstractTableModel):
+    def __init__(self, data: Optional[List[Dict[str, Any]]] = None, parent=None):
+        super().__init__(parent)
+        self._data: List[Dict[str, Any]] = data if data is not None else []
+        self._headers = ["تاریخ", "شرح", "وارده", "صادره", "مانده"]
+
+    def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
+        return len(self._data)
+
+    def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:
+        return len(self._headers)
+
+    def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole) -> Any:
+        if not index.isValid() or not (0 <= index.row() < len(self._data)):
+            return QVariant()
+        
+        item = self._data[index.row()]
+        col = index.column()
+
+        if role == Qt.ItemDataRole.DisplayRole:
+            if col == 0:
+                return date_converter.to_shamsi_str(item.get("movement_date"))
+            elif col == 1:
+                return item.get("description", "")
+            elif col == 2:
+                qty_in = item.get("qty_in", Decimal("0.0"))
+                return f"{qty_in:.2f}" if qty_in > 0 else ""
+            elif col == 3:
+                qty_out = item.get("qty_out", Decimal("0.0"))
+                return f"{qty_out:.2f}" if qty_out > 0 else ""
+            elif col == 4:
+                balance = item.get("balance", Decimal("0.0"))
+                return f"{balance:.2f}"
+        
+        elif role == Qt.ItemDataRole.TextAlignmentRole:
+            if col in [2, 3, 4]:
+                return Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter
+            return Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+            
+        return QVariant()
+
+    def headerData(self, section: int, orientation: Qt.Orientation, role: int = Qt.ItemDataRole.DisplayRole) -> Any:
+        if orientation == Qt.Orientation.Horizontal and role == Qt.ItemDataRole.DisplayRole:
+            if 0 <= section < len(self._headers):
+                return self._headers[section]
+        return QVariant()
+
+    def update_data(self, new_data: List[Dict[str, Any]]):
+        self.beginResetModel()
+        self._data = new_data
+        self.endResetModel()
 # ============================================================
 #  ویجت جدید: GeneralLedgerWidget
 # ============================================================
@@ -333,58 +416,6 @@ class GeneralLedgerWidget(QWidget):
         except Exception as e:
             logger.error(f"Error generating general ledger report: {e}", exc_info=True)
             QMessageBox.critical(self, "خطا", f"خطا در تهیه دفتر کل: {e}")
-
-class StockLedgerTableModel(QAbstractTableModel):
-    def __init__(self, data: Optional[List[Dict[str, Any]]] = None, parent=None):
-        super().__init__(parent)
-        self._data: List[Dict[str, Any]] = data if data is not None else []
-        self._headers = ["تاریخ", "شرح", "وارده", "صادره", "مانده"]
-
-    def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
-        return len(self._data)
-
-    def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:
-        return len(self._headers)
-
-    def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole) -> Any:
-        if not index.isValid() or not (0 <= index.row() < len(self._data)): return QVariant()
-        
-        item = self._data[index.row()]
-        col = index.column()
-
-        if role == Qt.ItemDataRole.DisplayRole:
-            if col == 0: return date_converter.to_shamsi_str(item.get("movement_date"))
-            elif col == 1: return item.get("description", "")
-            elif col == 2:
-                qty_in = item.get("qty_in", Decimal("0.0"))
-                return f"{qty_in:.2f}" if qty_in > 0 else ""
-            elif col == 3:
-                qty_out = item.get("qty_out", Decimal("0.0"))
-                return f"{qty_out:.2f}" if qty_out > 0 else ""
-            elif col == 4:
-                balance = item.get("balance", Decimal("0.0"))
-                return f"{balance:.2f}"
-        
-        elif role == Qt.ItemDataRole.TextAlignmentRole:
-            if col in [2, 3, 4]:
-                return Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter
-            return Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-            
-        return QVariant()
-
-    def headerData(self, section: int, orientation: Qt.Orientation, role: int = Qt.ItemDataRole.DisplayRole) -> Any:
-        if orientation == Qt.Orientation.Horizontal and role == Qt.ItemDataRole.DisplayRole:
-            if 0 <= section < len(self._headers): return self._headers[section]
-        return QVariant()
-
-    def update_data(self, new_data: List[Dict[str, Any]]):
-        self.beginResetModel()
-        self._data = new_data
-        self.endResetModel()
-
-# ============================================================
-#  ویجت جدید: StockLedgerWidget
-# ============================================================
 class StockLedgerWidget(QWidget):
     def __init__(self, reports_manager: ReportsManager, product_manager: ProductManager, parent=None):
         super().__init__(parent)
@@ -397,7 +428,6 @@ class StockLedgerWidget(QWidget):
         layout = QVBoxLayout(self)
         
         options_group = QGroupBox("فیلتر کاردکس کالا")
-        # FIX: تعریف options_layout قبل از استفاده
         options_layout = QFormLayout(options_group)
         
         self.product_combo = QComboBox(self)
@@ -417,6 +447,7 @@ class StockLedgerWidget(QWidget):
         layout.addWidget(self.ledger_table)
         
         self.generate_button.clicked.connect(self._generate_ledger)
+
     def _populate_products_combo(self):
         try:
             products = self.product_manager.get_all_products(active_only=False)
@@ -440,7 +471,134 @@ class StockLedgerWidget(QWidget):
             self.ledger_model.update_data(report_data)
         except Exception as e:
             QMessageBox.critical(self, "خطا", f"خطا در تهیه کاردکس کالا: {e}")
+class PersonsBalanceWidget(QWidget):
+    def __init__(self, reports_manager: ReportsManager, parent=None):
+        super().__init__(parent)
+        self.reports_manager = reports_manager
+        self._init_ui()
 
+    def _init_ui(self):
+        layout = QVBoxLayout(self)
+        options_group = QGroupBox("فیلتر گزارش مانده حساب")
+        options_layout = QFormLayout(options_group)
+        
+        self.person_type_combo = QComboBox(self)
+        self.person_type_combo.addItem("بدهکاران (مشتریان)", PersonType.CUSTOMER)
+        self.person_type_combo.addItem("بستانکاران (تامین کنندگان)", PersonType.SUPPLIER)
+        
+        self.generate_button = QPushButton("تهیه گزارش")
+        
+        options_layout.addRow("نمایش:", self.person_type_combo)
+        options_layout.addRow(self.generate_button)
+        layout.addWidget(options_group)
+        
+        self.table = QTableView(self)
+        self.model = PersonsBalanceTableModel()
+        self.table.setModel(self.model)
+        layout.addWidget(self.table)
+        
+        self.generate_button.clicked.connect(self._generate_report)
+
+    def _generate_report(self):
+        person_type = self.person_type_combo.currentData()
+        try:
+            report_data = self.reports_manager.get_persons_balance_report(person_type)
+            self.model.update_data(report_data)
+        except Exception as e:
+            QMessageBox.critical(self, "خطا", f"خطا در تهیه گزارش مانده حساب‌ها: {e}")
+class IncomeStatementWidget(QWidget):
+    def __init__(self, reports_manager: ReportsManager, parent=None):
+        super().__init__(parent)
+        self.reports_manager = reports_manager
+        self._init_ui()
+
+    def _init_ui(self):
+        layout = QVBoxLayout(self)
+        
+        options_group = QGroupBox("فیلتر صورت سود و زیان")
+        options_layout = QFormLayout(options_group)
+        
+        self.start_date_edit = ShamsiDateEdit(self)
+        self.end_date_edit = ShamsiDateEdit(self)
+        self.generate_button = QPushButton("تهیه گزارش")
+        
+        options_layout.addRow("از تاریخ:", self.start_date_edit)
+        options_layout.addRow("تا تاریخ:", self.end_date_edit)
+        options_layout.addRow(self.generate_button)
+        layout.addWidget(options_group)
+        
+        self.report_display = QTextBrowser(self)
+        self.report_display.document().setDefaultStyleSheet("body { font-family: 'Tahoma'; }")
+        layout.addWidget(self.report_display)
+        
+        self.generate_button.clicked.connect(self._generate_report)
+
+    def _generate_report(self):
+        start_date = self.start_date_edit.date()
+        end_date = self.end_date_edit.date()
+        
+        if not all([start_date, end_date]):
+            QMessageBox.warning(self, "خطا", "لطفاً هر دو تاریخ شروع و پایان را انتخاب کنید.")
+            return
+            
+        try:
+            report_data = self.reports_manager.get_income_statement_data(start_date, end_date)
+            html_content = self._format_report_as_html(report_data)
+            self.report_display.setHtml(html_content)
+        except Exception as e:
+            QMessageBox.critical(self, "خطا", f"خطا در تهیه صورت سود و زیان: {e}")
+
+    def _format_report_as_html(self, data: Dict[str, Any]) -> str:
+        start_shamsi = date_converter.to_shamsi_str(data['start_date'])
+        end_shamsi = date_converter.to_shamsi_str(data['end_date'])
+        
+        html = f"""
+        <html><head><style>
+            body {{ direction: rtl; padding: 15px; }}
+            h1, h2 {{ text-align: center; color: #2c3e50; }}
+            table {{ width: 100%; border-collapse: collapse; margin-top: 20px; font-size: 14px; }}
+            th, td {{ padding: 8px 12px; border: 1px solid #ddd; }}
+            .header-row {{ background-color: #f2f2f2; font-weight: bold; }}
+            .total-row td {{ background-color: #ecf0f1; font-weight: bold; border-top: 2px solid #bdc3c7; }}
+            .amount {{ text-align: left; padding-left: 20px; font-family: monospace; }}
+            .section-title {{ font-size: 18px; font-weight: bold; color: #34495e; margin-top: 25px; border-bottom: 2px solid #34495e; padding-bottom: 5px;}}
+        </style></head><body>
+            <h1>صورت سود و زیان</h1>
+            <h2>برای دوره از {start_shamsi} تا {end_shamsi}</h2>
+            <p class="section-title">درآمدها</p><table>
+        """
+        
+        if data['revenues']:
+            for item in data['revenues']:
+                html += f"<tr><td>{item['name']}</td><td class='amount'>{item['amount']:,.0f}</td></tr>"
+        else:
+            html += "<tr><td colspan='2'>هیچ درآمدی در این دوره ثبت نشده است.</td></tr>"
+            
+        html += f"<tr class='total-row'><td>جمع کل درآمدها</td><td class='amount'>{data['total_revenue']:,.0f}</td></tr></table>"
+        html += f'<p class="section-title">هزینه‌ها</p><table>'
+        
+        if data['expenses']:
+            for item in data['expenses']:
+                html += f"<tr><td>{item['name']}</td><td class='amount'>{item['amount']:,.0f}</td></tr>"
+        else:
+            html += "<tr><td colspan='2'>هیچ هزینه‌ای در این دوره ثبت نشده است.</td></tr>"
+            
+        html += f"<tr class='total-row'><td>جمع کل هزینه‌ها</td><td class='amount'>{data['total_expense']:,.0f}</td></tr></table>"
+        
+        net_income = data['net_income']
+        income_label = "سود خالص" if net_income >= 0 else "زیان خالص"
+        income_color = "#2ecc71" if net_income >= 0 else "#e74c3c"
+        
+        html += f"""
+            <br>
+            <table style="font-size: 16px;">
+                <tr style='background-color: {income_color}; color: white; font-weight: bold;'>
+                    <td>{income_label}</td>
+                    <td class='amount'>{abs(net_income):,.0f}</td>
+                </tr>
+            </table></body></html>
+        """
+        return html
 
 # ============================================================
 #  کلاس اصلی: ReportsUI
@@ -469,23 +627,10 @@ class ReportsUI(QWidget):
         self.general_ledger_widget = GeneralLedgerWidget(self.reports_manager, self.account_manager)
         self.report_tabs.addTab(self.general_ledger_widget, "دفتر کل")
 
-        # ساخت و افزودن ویجت کاردکس کالا
         self.stock_ledger_widget = StockLedgerWidget(self.reports_manager, self.product_manager)
         self.report_tabs.addTab(self.stock_ledger_widget, "کاردکس کالا")
-    def _generate_trial_balance(self):
-        end_date = self.end_date_edit.date()
-        if not end_date:
-            QMessageBox.warning(self, "خطا", "لطفاً تاریخ را انتخاب کنید.")
-            return
-            
-        try:
-            report_data = self.reports_manager.get_trial_balance(end_date=end_date)
-            self.trial_balance_model.update_data(report_data)
-            logger.info("Trial Balance report displayed successfully.")
-        except Exception as e:
-            logger.error(f"Error generating trial balance report: {e}", exc_info=True)
-            QMessageBox.critical(self, "خطا در گزارش‌گیری", f"خطا در تهیه تراز آزمایشی: {e}")
 
-    def _export_to_pdf(self):
-        # این قابلیت در آینده می‌تواند با WeasyPrint تکمیل شود
-        QMessageBox.information(self, "در دست ساخت", "قابلیت خروجی PDF در نسخه‌های بعدی اضافه خواهد شد.")
+        self.persons_balance_widget = PersonsBalanceWidget(self.reports_manager)
+        self.report_tabs.addTab(self.persons_balance_widget, "مانده حساب اشخاص")
+        self.income_statement_widget = IncomeStatementWidget(self.reports_manager)
+        self.report_tabs.addTab(self.income_statement_widget, "صورت سود و زیان")
