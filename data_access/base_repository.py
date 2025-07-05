@@ -1,7 +1,7 @@
 # src/data_access/base_repository.py
 
 from abc import ABC, abstractmethod
-from typing import Generic, TypeVar, Type, List, Optional, Dict, Any, Tuple,TYPE_CHECKING
+from typing import Generic, TypeVar, Type, List, Optional, Dict, Any, Tuple, TYPE_CHECKING, Union
 
 from datetime import date, datetime
 from src.data_access.database_manager import DatabaseManager
@@ -10,7 +10,7 @@ import logging # <<< این خط را اضافه کنید یا مطمئن شوی
 from typing import List, Optional, TypeVar, Generic, Any, Dict, TYPE_CHECKING, Type # <<< Add Type here
 from decimal import Decimal # <<< IMPORT DECIMAL HERE
 from enum import Enum
-from dataclasses import fields, is_dataclass # Import is_dataclass
+from dataclasses import fields, is_dataclass, MISSING
 # برای TypeVar، از "forward reference" به صورت رشته استفاده می‌کنیم
 # تا در زمان اجرا نیازی به import مستقیم BaseEntity در سطح ماژول نباشد.
 if TYPE_CHECKING:
@@ -26,19 +26,32 @@ T = TypeVar('T', bound='BaseEntity')
 # --- پایان اصلاح ---
 
 class BaseRepository(Generic[T]):
-    def __init__(self, db_manager: DatabaseManager, model_type: Type[T], table_name: str, db_columns: Optional[List[str]] = None):
+    def __init__(self, db_manager: DatabaseManager, model_type: Type[T], table_name: str):
         self.db_manager = db_manager
         self.model_type = model_type
         self._table_name = table_name
+        self._db_columns = [f.name for f in fields(model_type) if f.init]
+        logger.debug(f"BaseRepository for {self._table_name} initialized. Columns: {self._db_columns}")
+
+    def get_by_id(self, entity_id: int) -> Optional[T]:
+        query = f"SELECT * FROM {self._table_name} WHERE id = ?"
+        with self.db_manager as conn:
+            cursor = conn.execute(query, (entity_id,))
+            row = cursor.fetchone()
+            if row:
+                row_dict = {k[0]: v for k, v in zip(cursor.description, row)}
+                return self._entity_from_row(row_dict)
+        return None
+
+    def get_all(self, order_by: Optional[str] = None) -> List[T]:
+        query = f"SELECT * FROM {self._table_name}"
+        if order_by:
+            query += f" ORDER BY {order_by}"
         
-        if db_columns:
-            self._db_columns = db_columns
-            self._is_explicit_columns = True
-        else:
-            self._db_columns = [f.name for f in fields(self.model_type) if f.init]
-            self._is_explicit_columns = False
-        
-        logger.debug(f"BaseRepository for {table_name} initialized. Explicit db_columns: {self._is_explicit_columns}. Auto-detected columns: {self._db_columns}")
+        with self.db_manager as conn:
+            cursor = conn.execute(query)
+            rows = cursor.fetchall()
+            return [self._entity_from_row({k[0]: v for k, v in zip(cursor.description, row)}) for row in rows]
 
     def _get_table_name_from_entity(self) -> str:
         class_name = self._entity_type.__name__.replace("Entity", "")
@@ -163,48 +176,7 @@ class BaseRepository(Generic[T]):
             # raise e
             return None
 
-    def get_by_id(self, entity_id: int) -> Optional[T]:
-        query = f"SELECT * FROM {self._table_name} WHERE id = ?"
-        row = self.db_manager.fetch_one(query, (entity_id,))
-        return self._entity_from_row(dict(row)) if row else None
-
-    def get_all(self, 
-                order_by: Optional[str] = None,  # <<< پارامتر order_by
-                limit: Optional[int] = None     # <<< پارامتر limit
-                ) -> List[T]:
-        query = f"SELECT * FROM {self._table_name}"
-        params: List[Any] = [] # پارامترها باید لیست باشند برای extend احتمالی
-        
-        if order_by:
-            query += f" ORDER BY {order_by}"
-        
-        if limit is not None:
-            query += f" LIMIT ?"
-            params.append(limit)
-            
-        logger.debug(f"BaseRepository.get_all: Executing query: {query} with params: {params} for table {self._table_name}")
-        rows = self.db_manager.fetch_all(query, tuple(params) if params else None) 
-        
-        if rows is None:
-            logger.warning(f"BaseRepository.get_all: fetch_all returned None for table {self._table_name}")
-            return []
-        
-        logger.debug(f"BaseRepository.get_all: Fetched {len(rows)} raw rows for table {self._table_name}.")
-        entities: List[T] = []
-        for row_idx, row_data in enumerate(rows):
-            if row_data:
-                try:
-                    entity = self._entity_from_row(dict(row_data) if not isinstance(row_data, dict) else row_data) 
-                    entities.append(entity)
-                except Exception as e:
-                    logger.error(f"  BaseRepository.get_all: Error converting row {row_idx} to entity for table {self._table_name}: {e}. Row data: {row_data}", exc_info=True)
-            else:
-                logger.warning(f"  BaseRepository.get_all: Empty or None row_data at index {row_idx} for table {self._table_name}")
-        
-        # final_entity_ids = [e.id for e in entities if hasattr(e, 'id') and e.id is not None]
-        # logger.debug(f"BaseRepository.get_all: Returning {len(entities)} entities for table {self.__table_name}. IDs: {final_entity_ids}")
-        return entities
-
+    
     def find_by_criteria(self, criteria: Dict[str, Any], order_by: Optional[str] = None) -> List[T]:
         """
         موجودیت‌ها را بر اساس دیکشنری از معیارها با پشتیبانی از عملگرهای پیچیده پیدا می‌کند.
@@ -248,43 +220,51 @@ class BaseRepository(Generic[T]):
         entity_data = {}
         
         for f in fields(self.model_type):
-            # فقط فیلدهایی که در سازنده هستند را در نظر بگیر
             if not f.init:
                 continue
 
             field_name = f.name
             field_type = f.type
-            value = row.get(field_name)
+            value_from_db = row.get(field_name)
 
-            if value is None:
-                # اگر فیلد مقدار پیش‌فرض ندارد، None را برای آن در نظر بگیر
+            if value_from_db is None:
                 if f.default is MISSING and f.default_factory is MISSING:
-                    entity_data[field_name] = None
+                    is_optional = getattr(field_type, '__origin__', None) is Union and type(None) in getattr(field_type, '__args__', [])
+                    if not is_optional:
+                        raise ValueError(
+                            f"Database integrity error: NULL value found for required field '{field_name}' "
+                            f"in table '{self._table_name}' for row: {row}"
+                        )
                 continue
 
             try:
-                # منطق تبدیل نوع داده
-                is_enum = isinstance(field_type, type) and issubclass(field_type, Enum)
+                actual_type = field_type
+                if getattr(field_type, '__origin__', None) is Union:
+                    possible_types = [arg for arg in getattr(field_type, '__args__', []) if arg is not type(None)]
+                    if possible_types:
+                        actual_type = possible_types[0]
+                
+                is_enum = isinstance(actual_type, type) and issubclass(actual_type, Enum)
 
                 if is_enum:
-                    entity_data[field_name] = field_type(value)
-                elif field_type == Decimal:
-                    entity_data[field_name] = Decimal(str(value))
-                elif field_type == datetime and isinstance(value, str):
-                    entity_data[field_name] = datetime.fromisoformat(value)
-                elif field_type == date and isinstance(value, str):
-                    entity_data[field_name] = date.fromisoformat(value.split(" ")[0])
-                elif field_type == bool and isinstance(value, int):
-                    entity_data[field_name] = bool(value)
+                    entity_data[field_name] = actual_type(value_from_db)
+                elif actual_type == Decimal:
+                    entity_data[field_name] = Decimal(str(value_from_db))
+                elif actual_type == datetime and isinstance(value_from_db, str):
+                    entity_data[field_name] = datetime.fromisoformat(value_from_db)
+                elif actual_type == date and isinstance(value_from_db, str):
+                    entity_data[field_name] = date.fromisoformat(value_from_db.split(" ")[0])
+                elif actual_type == bool and isinstance(value_from_db, int):
+                    entity_data[field_name] = bool(value_from_db)
                 else:
-                    entity_data[field_name] = value
+                    entity_data[field_name] = value_from_db
             except (ValueError, TypeError) as e:
-                logger.warning(f"Type conversion failed for field '{field_name}' with value '{value}'. Skipping. Error: {e}")
+                logger.warning(f"Type conversion failed for field '{field_name}' with value '{value_from_db}'. Setting to None. Error: {e}")
                 entity_data[field_name] = None
 
-        # اطمینان از اینکه تمام فیلدهای اجباری مقدار دارند
-        for f in fields(self.model_type):
-            if f.init and f.name not in entity_data and f.default is MISSING and f.default_factory is MISSING:
-                 raise ValueError(f"Missing required attribute '{f.name}' for creating {self.model_type.__name__} object.")
-
-        return self.model_type(**entity_data)
+        try:
+            return self.model_type(**entity_data)
+        except TypeError as e:
+            logger.error(f"Failed to instantiate {self.model_type.__name__}. Error: {e}. Data passed: {entity_data}")
+            missing_fields = [f.name for f in fields(self.model_type) if f.init and f.name not in entity_data and f.default is MISSING and f.default_factory is MISSING]
+            raise TypeError(f"Missing required arguments for {self.model_type.__name__}: {missing_fields}. Original error: {e}") from e
